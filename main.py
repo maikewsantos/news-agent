@@ -10,87 +10,106 @@ load_dotenv()
 app = Flask(__name__)
 claude = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
-# Palavras que ativam o agente
-GATILHOS = [
-    "notícia", "noticias", "noticia",
-    "news", "hoje", "o que aconteceu",
-    "briefing", "resumo", "manchete"
-]
 
-def é_pedido_de_notícias(texto: str) -> bool:
-    t = texto.lower()
-    return any(g in t for g in GATILHOS)
+def extrair_topico(mensagem: str) -> str | None:
+    resposta = claude.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=100,
+        messages=[{
+            "role": "user",
+            "content": f"""The user sent this WhatsApp message: "{mensagem}"
 
-def buscar_artigos() -> list[dict]:
-    """Busca top headlines do Brasil via NewsAPI."""
+Is this a request for news about a topic? If yes, reply with ONLY the topic (e.g. "artificial intelligence", "Brazil economy", "NBA"). 
+If it is NOT a news request, reply with exactly: NOT_NEWS
+
+Reply with nothing else."""
+        }]
+    )
+    resultado = resposta.content[0].text.strip()
+    if resultado == "NOT_NEWS":
+        return None
+    return resultado
+
+
+def buscar_artigos(topico: str) -> list:
     r = requests.get(
-        "https://newsapi.org/v2/top-headlines",
+        "https://newsapi.org/v2/everything",
         params={
-            "country": "br",
+            "q": topico,
             "pageSize": 8,
+            "sortBy": "publishedAt",
             "apiKey": os.getenv("NEWSAPI_KEY"),
         },
         timeout=10,
     )
     data = r.json()
-
     if data.get("status") != "ok":
-        raise RuntimeError(f"NewsAPI: {data.get('message', 'erro desconhecido')}")
-
+        raise RuntimeError(f"NewsAPI: {data.get('message', 'unknown error')}")
     return [
         a for a in data.get("articles", [])
         if a.get("title") and "[Removed]" not in a["title"]
     ]
 
-def formatar_briefing(artigos: list[dict]) -> str:
-    """Usa Claude para transformar artigos brutos em briefing estilo WhatsApp."""
+
+def formatar_briefing(topico: str, artigos: list) -> str:
     lista = "\n".join(
         f"• {a['title']} | {a['source']['name']} | {a['url']}"
         for a in artigos
     )
-
     resposta = claude.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=700,
         messages=[{
             "role": "user",
-            "content": f"""Crie um briefing de notícias para WhatsApp a partir dos artigos abaixo.
+            "content": f"""Create a WhatsApp news briefing about "{topico}" from the articles below.
 
-Formato obrigatório:
-- Linha 1: "📰 *Notícias de hoje* — [data de hoje]"
-- Em seguida, 4-5 destaques numerados, cada um com emoji relevante e 1 frase concisa
-- Linha final: lista de links numerados, um por linha, no formato "1. [Fonte] url"
-- Tom informal, direto, sem asteriscos excessivos
+Required format:
+- Line 1: "📰 *{topico}* — [today's date]"
+- 4-5 numbered highlights, each with a relevant emoji and 1 concise sentence
+- Final section: numbered links, one per line, format: "1. [Source] url"
+- Informal, direct tone. Reply in the same language the user wrote in.
 
-Artigos:
-{lista}""",
-        }],
+Articles:
+{lista}"""
+        }]
     )
     return resposta.content[0].text
+
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     body = request.form.get("Body", "").strip()
     resp = MessagingResponse()
 
+    if not body:
+        resp.message("👋 Send me a topic and I'll find the latest news for you.")
+        return str(resp), 200, {"Content-Type": "text/xml"}
+
     try:
-        if é_pedido_de_notícias(body):
-            artigos = buscar_artigos()
-            if not artigos:
-                resp.message("😕 Não achei notícias agora. Tenta em alguns minutos.")
-            else:
-                briefing = formatar_briefing(artigos)
-                resp.message(briefing)
-        else:
+        topico = extrair_topico(body)
+        if topico is None:
             resp.message(
-                '👋 Oi! Me manda *"quais são as notícias de hoje?"* '
-                "para receber um briefing."
+                "👋 Hi! Ask me about any topic and I'll send you a news briefing.\n\n"
+                "Examples:\n• tell me about AI\n• what's happening in Brazil?\n• NBA news"
             )
+        else:
+            artigos = buscar_artigos(topico)
+            if not artigos:
+                resp.message(f"😕 No articles found for *{topico}*. Try a different topic.")
+            else:
+                briefing = formatar_briefing(topico, artigos)
+                resp.message(briefing)
     except Exception as e:
-        resp.message(f"⚠️ Erro: {e}")
+        resp.message(f"⚠️ Error: {e}")
 
     return str(resp), 200, {"Content-Type": "text/xml"}
 
+
+@app.route("/", methods=["GET"])
+def health():
+    return "🤖 News agent running.", 200
+
+
 if __name__ == "__main__":
-    print("🤖 Agente de notícias rodando em http://localhost:5000")
-    app.run(port=5000, debug=True)
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

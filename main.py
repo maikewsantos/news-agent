@@ -4,6 +4,7 @@ import anthropic
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 from dotenv import load_dotenv
+from datetime import date
 
 load_dotenv()
 
@@ -64,7 +65,7 @@ def formatar_briefing(topico: str, artigos: list) -> str:
             "content": f"""Create a WhatsApp news briefing about "{topico}" from the articles below.
 
 Required format:
-- Line 1: "📰 *{topico}* — [today's date]"
+- Line 1: "📰 *{topico}* — {date.today().strftime('%B %d, %Y')}"
 - 4-5 numbered highlights, each with a relevant emoji and 1 concise sentence
 - Final section: numbered links, one per line, format: "1. [Source] url"
 - Informal, direct tone. Reply in the same language the user wrote in.
